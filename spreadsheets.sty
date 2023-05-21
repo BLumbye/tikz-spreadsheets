@@ -1,0 +1,488 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                         %
+%       spreadsheets.sty  v0.1     encoding : UTF8        %
+%                                                         %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                         %
+%               Created by Benjamin Lumbye                %
+%        Based on pas-tableur by Stephane PASQUET         %
+%                                                         %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ 
+\def\fileversion{0.1}
+\def\filedate{2023/03/20}
+\NeedsTeXFormat{LaTeX2e}[1999/12/01]
+\ProvidesPackage{spreadsheets}[%
+  \filedate\space v\fileversion\space
+  LaTeX package by Benjamin Lumbye]
+\RequirePackage{tikz}
+\usetikzlibrary{calc}
+\RequirePackage{xstring}
+\RequirePackage{xkeyval}
+\RequirePackage{expl3}
+\RequirePackage{xparse}
+
+\ExplSyntaxOn
+\cs_generate_variant:Nn \regex_extract_once:nnN { neN }
+\cs_generate_variant:Nn \int_from_alph:n { e }
+\cs_generate_variant:Nn \seq_set_split:Nnn { cnf }
+
+\cs_new_protected:Npn \extract_cell:nnn #1 #2 #3 { % #1: Cell - #2: Column variable - #3: Row variable
+    \regex_extract_once:neN  { ^\s*([A-Z]+)(\d+)\s* } {#1} \l_tmpa_seq
+    \tl_gset:Nx #2 { \seq_item:Nn \l_tmpa_seq { 2 } }
+    \tl_gset:Nx #3 { \seq_item:Nn \l_tmpa_seq { 3 } }
+}
+
+\cs_new_protected:Npn \extract_range:nnnnn #1 #2 #3 #4 #5 { % #1: Range - #2: First Column variable - #3: First Row variable  - #4: Second Column variable - #5: Second Row variable
+    \regex_extract_once:neN  { ^\s*([A-Z]+)(\d+)-([A-Z]+)(\d+)\s* } {#1} \l_tmpa_seq
+    \tl_gset:Nx #2 { \seq_item:Nn \l_tmpa_seq { 2 } }
+    \tl_gset:Nx #3 { \seq_item:Nn \l_tmpa_seq { 3 } }
+    \tl_gset:Nx #4 { \seq_item:Nn \l_tmpa_seq { 4 } }
+    \tl_gset:Nx #5 { \seq_item:Nn \l_tmpa_seq { 5 } }
+}
+
+\tl_new:N \l_cell_column
+\tl_new:N \l_cell_row
+\tl_new:N \l_first_column
+\tl_new:N \l_first_row
+\tl_new:N \l_second_column
+\tl_new:N \l_second_row
+\prg_new_conditional:Npnn \cell_in_range:nn #1 #2 { p,T,F,TF } {
+    \extract_cell:nnn {#1} {\l_cell_column} {\l_cell_row}
+    \extract_range:nnnnn {#2} {\l_first_column} {\l_first_row} {\l_second_column} {\l_second_row}
+    \bool_lazy_all:nTF {
+        { \bool_lazy_or_p:nn {\str_compare_p:eNe {\l_cell_column} > {\l_first_column}} {\str_compare_p:eNe {\l_cell_column} = {\l_first_column}} }
+        { \bool_lazy_or_p:nn {\str_compare_p:eNe {\l_cell_column} < {\l_second_column}} {\str_compare_p:eNe {\l_cell_column} = {\l_second_column}}}
+        { \bool_lazy_or_p:nn {\int_compare_p:nNn {\l_cell_row} > {\l_first_row}} {\int_compare_p:nNn {\l_cell_row} = {\l_first_row}}}
+        { \bool_lazy_or_p:nn {\int_compare_p:nNn {\l_cell_row} < {\l_second_row}} {\int_compare_p:nNn {\l_cell_row} = {\l_second_row}}}
+    }{\prg_return_true:}{\prg_return_false:}
+}
+
+\seq_new:N \l_ranges_seq
+\bool_new:N \l_in_any_range
+\prg_new_conditional:Npnn \cell_in_any_range:nn #1 #2 { p,T,F,TF } { % #1: Cell - #2: Comma separated ranges
+    \seq_set_split:Nnn \l_ranges_seq {,} {#2}
+    \bool_set_false:N \l_in_any_range
+    \seq_map_inline:Nn \l_ranges_seq {
+        \cell_in_range:nnT {#1} {##1} {
+            \bool_set_true:N \l_in_any_range
+            \seq_map_break:
+        }
+    }
+    \bool_if:NTF {\l_in_any_range} {\prg_return_true:} {\prg_return_false:}
+}
+
+\prg_generate_conditional_variant:Nnn \cell_in_any_range:nn { ff } { p,T,F,TF }
+
+\cs_new_protected:Npn \initialize_spreadsheet:nnnnnnnnn #1 #2 #3 #4 #5 #6 #7 #8 #9 { % #1: name - #2: columns - #3: rows - #4: widths - #5: heights - #6: column height - #7: row width - #8: cell widths - #9: cell heights
+    % Create variables
+    \seq_new:c {l_ss_#1_widths}
+    \seq_new:c {l_ss_#1_xs}
+    \dim_new:c {l_ss_#1_total_width}
+    \seq_set_split:cnf {l_ss_#1_widths} {,} {#8}
+    
+    \seq_new:c {l_ss_#1_heights}
+    \seq_new:c {l_ss_#1_ys}
+    \dim_new:c {l_ss_#1_total_height}
+    \seq_set_split:cnf {l_ss_#1_heights} {,} {#9}
+    
+    \dim_new:c {l_ss_#1_column_height}
+    \dim_new:c {l_ss_#1_row_width}
+
+    \dim_set:cn {l_ss_#1_column_height} {#6}
+    \dim_set:cn {l_ss_#1_row_width} {#7}
+
+    
+    % Populate widths and xs - in the future allow the option for user specify widths for individual columns
+    % First
+    \int_compare:nNnTF {\seq_count:c {l_ss_#1_widths}} < {1} {
+        \seq_put_right:cV {l_ss_#1_widths} {#4}
+    }{
+        \tl_if_blank:eTF {\seq_item:cn {l_ss_#1_widths} {1}} {
+            \seq_set_item:cnn {l_ss_#1_widths} {1} {#4}
+        } {}
+    }
+    \seq_put_right:cx {l_ss_#1_xs} {\dim_use:c {l_ss_#1_total_width}}
+
+    % Others
+    \int_step_inline:nnn {2} {#2} {
+        \int_compare:nNnTF {\seq_count:c {l_ss_#1_widths}} < {##1} {
+            \seq_put_right:cV {l_ss_#1_widths} {#4}
+        }{
+            \tl_if_blank:eTF {\seq_item:cn {l_ss_#1_widths} {##1}} {
+                \seq_set_item:cnn {l_ss_#1_widths} {##1} {#4}
+            } {}
+        }
+        \dim_add:cn {l_ss_#1_total_width} {\seq_item:cn {l_ss_#1_widths} {##1} / 2 + \seq_item:cn {l_ss_#1_widths} {##1 - 1} / 2}
+        \seq_put_right:cx {l_ss_#1_xs} {\dim_use:c {l_ss_#1_total_width}}
+    }
+
+    % Populate heights and ys - in the future allow the option for user specify height for individual rows
+    % First
+    \int_compare:nNnTF {\seq_count:c {l_ss_#1_heights}} < {1} {
+        \seq_put_right:cV {l_ss_#1_heights} {#5}
+    }{
+        \tl_if_blank:eTF {\seq_item:cn {l_ss_#1_heights} {1}} {
+            \seq_set_item:cnn {l_ss_#1_heights} {1} {#5}
+        } {}
+    }
+    \seq_put_right:cx {l_ss_#1_ys} {\dim_use:c {l_ss_#1_total_height}}
+
+    % Others
+    \int_step_inline:nnn {2} {#3} {
+        \int_compare:nNnTF {\seq_count:c {l_ss_#1_heights}} < {##1} {
+            \seq_put_right:cV {l_ss_#1_heights} {#5}
+        }{
+            \tl_if_blank:eTF {\seq_item:cn {l_ss_#1_heights} {##1}} {
+                \seq_set_item:cnn {l_ss_#1_heights} {##1} {#5}
+            } {}
+        }
+        \dim_sub:cn {l_ss_#1_total_height} {\seq_item:cn {l_ss_#1_heights} {##1} / 2 + \seq_item:cn {l_ss_#1_heights} {##1 - 1} / 2}
+        \seq_put_right:cx {l_ss_#1_ys} {\dim_use:c {l_ss_#1_total_height}}
+    }
+}
+
+\cs_new_protected:Npn \get_column_width:nnN #1 #2 #3 { % #1: name - #2: column - #3: variable to save to
+    \dim_zero_new:N #3
+    \dim_set:Nn #3 {\seq_item:cn {l_ss_#1_widths} {#2}}
+}
+
+\cs_new_protected:Npn \get_column_x:nnN #1 #2 #3 { % #1: name - #2: column - #3: variable to save to
+    \dim_zero_new:N #3
+    \dim_set:Nn #3 {\seq_item:cn {l_ss_#1_xs} {#2}}
+}
+
+\cs_new_protected:Npn \get_row_height:nnN #1 #2 #3 { % #1: name - #2: row - #3: variable to save to
+    \dim_zero_new:N #3
+    \dim_set:Nn #3 {\seq_item:cn {l_ss_#1_heights} {#2}}
+}
+
+\cs_new_protected:Npn \get_row_y:nnN #1 #2 #3 { % #1: name - #2: row - #3: variable to save to
+    \dim_zero_new:N #3
+    \dim_set:Nn #3 {\seq_item:cn {l_ss_#1_ys} {#2}}
+}
+
+\cs_new_protected:Npn \get_merged_width:nnN #1 #2 #3 { % #1: name - #2: range - #3: variable to save to
+    \extract_range:nnnnn {#2} {\l_first_column} {\l_tmpa_tl} {\l_second_column} {\l_tmpa_tl}
+    \dim_zero_new:N #3
+    \int_step_inline:nnn {\int_from_alph:e {\l_first_column}} {\int_from_alph:e {\l_second_column}} {
+        \dim_add:Nn #3 {\seq_item:cn {l_ss_#1_widths} {##1}}
+    }
+}
+
+\cs_new_protected:Npn \get_merged_height:nnN #1 #2 #3 { % #1: name - #2: range - #3: variable to save to
+    \extract_range:nnnnn {#2} {\l_tmpa_tl} {\l_first_row} {\l_tmpa_tl} {\l_second_row}
+    \dim_zero_new:N #3
+    \int_step_inline:nnn {\l_first_row} {\l_second_row} {
+        \dim_add:Nn #3 {\seq_item:cn {l_ss_#1_heights} {##1}}
+    }
+}
+
+\cs_new_protected:Npn \get_merged_x:nnN #1 #2 #3 { % #1: name - #2: range - #3: variable to save to
+    \extract_range:nnnnn {#2} {\l_first_column} {\l_tmpa_tl} {\l_second_column} {\l_tmpa_tl}
+    \dim_zero_new:N #3
+    \int_step_inline:nnn {\int_from_alph:e {\l_first_column} + 1} {\int_from_alph:e {\l_second_column}} {
+        \dim_add:Nn #3 {\seq_item:cn {l_ss_#1_widths} {##1}}
+    }
+    \dim_set:Nn #3 {\dim_eval:n {#3 / 2}}
+    \dim_add:Nn #3 {\seq_item:cn {l_ss_#1_xs} {\int_from_alph:e {\l_first_column}}}
+}
+
+\cs_new_protected:Npn \get_merged_y:nnN #1 #2 #3 { % #1: name - #2: range - #3: variable to save to
+    \extract_range:nnnnn {#2} {\l_tmpa_tl} {\l_first_row} {\l_tmpa_tl} {\l_second_row}
+    \dim_zero_new:N #3
+    \int_step_inline:nnn {\l_first_row + 1} {\l_second_row} {
+        \dim_sub:Nn #3 {\seq_item:cn {l_ss_#1_heights} {##1}}
+    }
+    \dim_set:Nn #3 {\dim_eval:n {#3 / 2}}
+    \dim_add:Nn #3 {\seq_item:cn {l_ss_#1_ys} {\l_first_row}}
+}
+
+\prg_new_conditional:Npnn \is_range:n #1 { TF } { % #1: Cell or range
+    \str_if_in:nnTF {#1} {-} {\prg_return_true:} {\prg_return_false:}
+}
+
+\cs_new_protected:Npn \assign_aliases:n #1 { % #1: range
+    \extract_range:nnnnn {#1} {\l_fist_column} {\l_first_row} {\l_second_column} {\l_second_row}
+    \int_step_inline:nnn {\l_first_row} {\l_second_row} {
+        \int_step_inline:nnn {\int_from_alph:e {\l_first_column}} {\int_from_alph:e {\l_second_column}} {
+            \node also [alias=\int_to_Alph:n {####1}##1] (#1);
+        }
+    }
+}
+
+
+\NewDocumentCommand {\IntToAlph} { m } {%
+    \int_to_Alph:n {#1}%
+}
+
+\NewDocumentCommand {\AlphToInt} { m } {%
+    \int_from_alph:n {#1}%
+}
+
+\NewDocumentCommand {\ExtractCell} { m m m } {%
+    \extract_cell:nnn {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\IfCellInAnyRange} { m m m m } {%
+    \cell_in_any_range:ffTF {#1} {#2} {#3} {#4}%
+}
+
+\NewDocumentCommand {\IfRange} { m m m } {%
+    \is_range:nTF {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\InitializeSpreadsheet} { m m m m m m m m m } {%
+    \initialize_spreadsheet:nnnnnnnnn {#1} {#2} {#3} {#4} {#5} {#6} {#7} {#8} {#9}%
+}
+
+\NewDocumentCommand {\GetColumnWidth} { m m m } {%
+    \get_column_width:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetColumnX} { m m m } {%
+    \get_column_x:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetRowHeight} { m m m } {%
+    \get_row_height:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetRowY} { m m m } {%
+    \get_row_y:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetMergedWidth} { m m m } {%
+    \get_merged_width:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetMergedHeight} { m m m } {%
+    \get_merged_height:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetMergedX} { m m m } {%
+    \get_merged_x:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\GetMergedY} { m m m } {%
+    \get_merged_y:nnN {#1} {#2} {#3}%
+}
+
+\NewDocumentCommand {\AssignAliases} { m } {%
+    \assign_aliases:n {#1}%
+}
+\ExplSyntaxOff
+
+%
+% Definition of colors
+%
+\definecolor{headerBackground}{cmyk}{0.08,0.05,0.06,0}
+\definecolor{cellBorder}{cmyk}{0.29,0.21,0.21,0}
+
+%
+% Font definition
+%
+\newcommand{\helvbx}{\usefont{T1}{phv}{m}{n}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Construction of tables %
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+%	
+%==> Intermediate macro: Drawing column/row header cells
+%
+\newcommand{\ss@draw@header}[6]{%
+% #1: width, #2: height, #3: name, #4: 1=columns / 2=rows, #5: coordinates, #6: content
+    \ifnum#4=1%
+        \tikzstyle{ssanchor} = [anchor=south]%
+    \else%
+        \tikzstyle{ssanchor} = [anchor=east]%
+    \fi%
+    \node[draw=black,fill=headerBackground,rectangle,outer sep=0pt,minimum width={#1},minimum height=#2,ssanchor] (#3) at (#5) {\helvbx#6};%
+}
+%
+%==> Intermediate macro: drawing the grid
+%
+\newcommand{\ss@draw@cell}[5][]{%
+% #1: additional options - #2: width - #3: height - #4: name - #5: coord.
+    \node[outer sep=0pt,minimum height=#3,minimum width=#2,#1] (#4) at (#5) {};%
+    \ifSS@spreadsheet@showgridlines%
+        \draw[cellBorder] ($(#4.south west)+(0.25pt,0)$) -- (#4.south east) -- ($(#4.north east)+(0,-0.25pt)$);%
+    \fi%
+}
+
+
+\define@cmdkeys[SS]{spreadsheet}{width, height, cellwidth, cellheight, rowwidth, columnheight, mergedcells, cellwidths, cellheights}{}
+\define@boolkeys[SS]{spreadsheet}{showheadings, showgridlines}{}
+\presetkeys[SS]{spreadsheet}{width=3, height=3, cellwidth=2cm, cellheight=0.6cm, rowwidth=1cm, columnheight=0.6cm, showheadings=true, showgridlines=true, mergedcells={}, cellwidths={}, cellheights={}}{}
+
+\newcommand{\spreadsheet}[2][]{%
+% #1: KV-options - #2: Name of spreadsheet
+    \setkeys[SS]{spreadsheet}{#1}%
+
+    \pgfdeclarelayer{background}
+    \pgfsetlayers{background,main}
+
+    \InitializeSpreadsheet{#2}{\cmdSS@spreadsheet@width}{\cmdSS@spreadsheet@height}{\cmdSS@spreadsheet@cellwidth}{\cmdSS@spreadsheet@cellheight}{\cmdSS@spreadsheet@columnheight}{\cmdSS@spreadsheet@rowwidth}{\cmdSS@spreadsheet@cellwidths}{\cmdSS@spreadsheet@cellheights}%
+
+    % Draw headers
+    \ifSS@spreadsheet@showheadings%
+        % Draw column headers
+        \foreach \i in {1,...,\cmdSS@spreadsheet@width}{%
+            \def\name{\IntToAlph{\i}}%
+            \GetColumnWidth{#2}{\i}{\ss@width}%
+            \GetColumnX{#2}{\i}{\ss@x}%
+            \GetRowHeight{#2}{1}{\ss@y}%
+            \ss@draw@header{\ss@width}{\cmdSS@spreadsheet@columnheight}{col\name}{1}{\ss@x,\ss@y/2}{\name}%
+        }%
+        
+        % Draw row headers
+        \foreach \i in {1,...,\cmdSS@spreadsheet@height}{%
+            \GetColumnWidth{#2}{1}{\ss@x}%
+            \GetRowHeight{#2}{\i}{\ss@height}%
+            \GetRowY{#2}{\i}{\ss@y}%
+            \ss@draw@header{\cmdSS@spreadsheet@rowwidth}{\ss@height}{row\i}{2}{-\ss@x/2,\ss@y}{\i}%
+        }%
+    \fi%
+
+    % Draw cells
+    \foreach \i in {1,...,\cmdSS@spreadsheet@height}{%
+        \GetRowY{#2}{\i}{\ss@y}
+        \GetRowHeight{#2}{\i}{\ss@height}%
+        \foreach \j in {1,...,\cmdSS@spreadsheet@width}{%
+            \GetColumnX{#2}{\j}{\ss@x}%
+            \GetColumnWidth{#2}{\j}{\ss@width}%
+            \def\col{\IntToAlph{\j}}%
+            \IfCellInAnyRange{\col\i}{\cmdSS@spreadsheet@mergedcells}{}{%
+                \ss@draw@cell{\ss@width}{\ss@height}{\col\i}{\ss@x,\ss@y}%
+            }%
+        }%
+    }%
+
+    % Draw merged cells
+    \foreach \mergedcell in \cmdSS@spreadsheet@mergedcells{%
+        \GetMergedX{#2}{\mergedcell}{\ss@x}%
+        \GetMergedY{#2}{\mergedcell}{\ss@y}%
+        \GetMergedWidth{#2}{\mergedcell}{\ss@width}%
+        \GetMergedHeight{#2}{\mergedcell}{\ss@height}%
+        \ss@draw@cell{\ss@width}{\ss@height}{\mergedcell}{\ss@x,\ss@y}%
+        \AssignAliases{\mergedcell}%
+    }
+
+    % Draw remaining border if headings is disabled
+    \ifSS@spreadsheet@showgridlines%
+        \ifSS@spreadsheet@showheadings%
+        \else%
+            \draw[cellBorder] ($(A\cmdSS@spreadsheet@height.south west)+(0,-0.2pt)$) -- (A1.north west) -- ($(\IntToAlph{\cmdSS@spreadsheet@width}1.north east)+(0.2pt,0)$);%
+        \fi%
+    \fi%
+}%
+
+%	
+% Command to insert text in cells
+% TODO: Add special version to handle math/formulas
+%
+\define@boolkeys[SS]{celltext}{l,c,r,t,m,b,lt,lm,lb,ct,cm,cb,rt,rm,rb}[true]
+\presetkeys[SS]{celltext}{l=false,c=false,r=false,t=false,m=false,b=false,lt=false,lm=false,lb=false,ct=false,cm=false,cb=false,rt=false,rm=false,rb=false}{}
+\newcommand{\celltext}[4][]{%
+% #1: Options - #2: Spreadsheet name - #3: Cell - #4: Contents
+   \setkeys[SS]{celltext}{#1}%
+   
+    % Get cell dimensions
+    \IfRange{#3}{%
+        \GetMergedX{#2}{#3}{\ss@x}%
+        \GetMergedY{#2}{#3}{\ss@y}%
+        \GetMergedWidth{#2}{#3}{\ss@width}%
+        \GetMergedHeight{#2}{#3}{\ss@height}%
+    }{%
+        \ExtractCell{#3}{\ss@colAlph}{\ss@row}
+        \edef\ss@col{\AlphToInt{\ss@colAlph}}
+        \GetColumnX{#2}{\ss@col}{\ss@x}%
+        \GetRowY{#2}{\ss@row}{\ss@y}%
+        \GetColumnWidth{#2}{\ss@col}{\ss@width}%
+        \GetRowHeight{#2}{\ss@row}{\ss@height}%
+    }
+
+    % Handle alignment
+    \ifSS@celltext@l%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@c%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\centering}%
+    \else\ifSS@celltext@r%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedleft}%
+    \else\ifSS@celltext@t%
+        \def\ss@vertical@align{t}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@m%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@b%
+        \def\ss@vertical@align{b}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@lt%
+        \def\ss@vertical@align{t}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@lm%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@lb%
+        \def\ss@vertical@align{b}%
+        \def\ss@horizontal@align{\raggedright}%
+    \else\ifSS@celltext@ct%
+        \def\ss@vertical@align{t}%
+        \def\ss@horizontal@align{\centering}%
+    \else\ifSS@celltext@cm%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\centering}%
+    \else\ifSS@celltext@cb%
+        \def\ss@vertical@align{b}%
+        \def\ss@horizontal@align{\centering}%
+    \else\ifSS@celltext@rt%
+        \def\ss@vertical@align{t}%
+        \def\ss@horizontal@align{\raggedleft}%
+    \else\ifSS@celltext@rm%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedleft}%
+    \else\ifSS@celltext@rb%
+        \def\ss@vertical@align{b}%
+        \def\ss@horizontal@align{\raggedleft}%
+    \else%
+        \def\ss@vertical@align{c}%
+        \def\ss@horizontal@align{\raggedright}%
+    \fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi%
+
+    % Draw text
+    \node[inner sep=0] at (\ss@x,\ss@y) {%
+        \begin{minipage}[c][\dimexpr\ss@height-4pt][\ss@vertical@align]{\dimexpr\ss@width-4pt}%
+            \ss@horizontal@align#4%
+        \end{minipage}
+    };%
+}
+
+% 
+% Command to color the background of cells
+% 
+\newcommand{\colorcells}[3]{%
+% #1: Spreadsheet name - #2: Cell - #3: Color
+    % Get cell dimensions
+    \IfRange{#2}{%
+        \GetMergedX{#1}{#2}{\ss@x}%
+        \GetMergedY{#1}{#2}{\ss@y}%
+        \GetMergedWidth{#1}{#2}{\ss@width}%
+        \GetMergedHeight{#1}{#2}{\ss@height}%
+    }{%
+        \ExtractCell{#2}{\ss@colAlph}{\ss@row}
+        \edef\ss@col{\AlphToInt{\ss@colAlph}}
+        \GetColumnX{#1}{\ss@col}{\ss@x}%
+        \GetRowY{#1}{\ss@row}{\ss@y}%
+        \GetColumnWidth{#1}{\ss@col}{\ss@width}%
+        \GetRowHeight{#1}{\ss@row}{\ss@height}%
+    }
+    
+    % Draw color
+    \begin{pgfonlayer}{background}
+        \fill[#3] ($(\ss@x,\ss@y)-0.5*(\ss@width,\ss@height)$) rectangle ($(\ss@x,\ss@y)+0.5*(\ss@width,\ss@height)$);%
+    \end{pgfonlayer}
+}
